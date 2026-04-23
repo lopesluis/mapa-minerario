@@ -105,12 +105,35 @@ if (sobreposicao){
 // ===== MAPA =====
 const map = L.map("map");
 
-// BASE SEMPRE NO FUNDO
-L.tileLayer(
+// BASE ESRI SATÉLITE COMO PRINCIPAL
+const esri = L.tileLayer(
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-  { maxZoom: 19, zIndex: 100 }
+  {
+    maxZoom: 19,
+    attribution: "Esri World Imagery"
+  }
 ).addTo(map);
 
+// BASE OSM COMO RESERVA
+const osm = L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  {
+    maxZoom: 19,
+    attribution: "© OpenStreetMap"
+  }
+);
+
+// Se ESRI falhar, troca automaticamente para OSM
+let esriErro = false;
+
+esri.on("tileerror", function () {
+  if (!esriErro) {
+    esriErro = true;
+    map.removeLayer(esri);
+    osm.addTo(map);
+    console.warn("ESRI falhou. Alternando para OpenStreetMap.");
+  }
+});
 // CRIA PANE PARA CAMADAS
 map.createPane('camadas');
 map.getPane('camadas').style.zIndex = 650;
