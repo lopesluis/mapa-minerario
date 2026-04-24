@@ -217,7 +217,7 @@ async function carregarAreasRestritas() {
   try {
     document.getElementById("loading-msg").textContent = "Carregando áreas restritas…";
 
-    const resp = await fetch("./areas_restritas.geojson");
+    const resp = await fetch("dados/areas_restritas.geojson");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const geojson = await resp.json();
 
