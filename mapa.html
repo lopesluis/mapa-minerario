@@ -208,13 +208,13 @@ let ucGroup = null;
 let tiGroup = null;
 
 async function carregarAreasRestritas() {
-  if (!sobFlag) {
-    esconderLoading();
-    return;
-  }
-
   try {
-    document.getElementById("loading-msg").textContent = "Carregando áreas restritas…";
+    if (!sobFlag || !procLayer) {
+      return;
+    }
+
+    document.getElementById("loading-msg").textContent =
+      "Carregando áreas restritas…";
 
     const resp = await fetch("dados/areas_restritas.geojson");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -224,29 +224,35 @@ async function carregarAreasRestritas() {
     const ucs = [];
     const tis = [];
 
-    const procBounds = procLayer ? procLayer.getBounds() : null;
-    if (!procBounds) {
-      esconderLoading();
-      return;
-    }
+    const procBounds = procLayer.getBounds();
 
-    for (const feat of geojson.features) {
+    for (const feat of geojson.features || []) {
       const props = feat.properties || {};
-      const nome  = String(props.nome || props.NOME || "Área sem nome").trim();
-      const tipo  = String(props.tipo || props.TIPO || "").trim();
+
+      const nome = String(
+        props.nome ||
+        props.NOME ||
+        props.nome_uc ||
+        props.NOME_UC ||
+        props.nome_ti ||
+        props.NOME_TI ||
+        "Área sem nome"
+      ).trim();
+
+      const tipo = String(
+        props.tipo ||
+        props.TIPO ||
+        ""
+      ).trim();
 
       const latlngs = extrairCoords(feat.geometry);
       if (!latlngs) continue;
 
-      const tempLayer = L.polygon(latlngs);
-      const areaBounds = tempLayer.getBounds();
-
-      // Verifica se a área restrita cruza a área do processo pelo envelope espacial
-      if (!procBounds.intersects(areaBounds)) continue;
+      const temp = L.polygon(latlngs);
+      if (!procBounds.intersects(temp.getBounds())) continue;
 
       const isTI =
-        tipo.includes("ndígena") ||
-        tipo.includes("Indigena") ||
+        tipo.toUpperCase().includes("INDIG") ||
         tipo.toUpperCase().includes("TERRA IND");
 
       const cor = isTI ? "#FF6D00" : "#00C853";
@@ -254,22 +260,24 @@ async function carregarAreasRestritas() {
       const poly = L.polygon(latlngs, {
         pane: "overlays",
         color: cor,
-        weight: 2,
+        weight: 3,
         fillColor: cor,
-        fillOpacity: 0.28,
-      }).bindPopup(`<b>${isTI ? "🔶 Terra Indígena" : "🌿 UC"}</b><br>${nome}`);
+        fillOpacity: 0.35,
+      }).bindPopup(
+        `<b>${isTI ? "🔶 Terra Indígena" : "🌿 Área Restrita"}</b><br>${nome}`
+      );
 
       if (isTI) tis.push(poly);
       else ucs.push(poly);
     }
 
-    if (ucs.length > 0) {
+    if (ucs.length) {
       ucGroup = L.layerGroup(ucs).addTo(map);
       document.getElementById("chk-uc-wrap").style.display = "block";
       document.getElementById("leg-uc").style.display = "flex";
     }
 
-    if (tis.length > 0) {
+    if (tis.length) {
       tiGroup = L.layerGroup(tis).addTo(map);
       document.getElementById("chk-ti-wrap").style.display = "block";
       document.getElementById("leg-ti").style.display = "flex";
@@ -277,16 +285,17 @@ async function carregarAreasRestritas() {
 
     if (procLayer) procLayer.bringToFront();
 
-    console.log("UCs adicionadas:", ucs.length);
-    console.log("TIs adicionadas:", tis.length);
+    console.log("Áreas restritas adicionadas:", {
+      ucs: ucs.length,
+      tis: tis.length
+    });
 
   } catch (err) {
-    console.warn("Não foi possível carregar áreas restritas:", err);
+    console.warn("Erro ao carregar áreas restritas:", err);
+  } finally {
+    esconderLoading();
   }
-
-  esconderLoading();
 }
-
     const nomeSet = new Set(nomesRestritosURL.map(normalizarTexto));
 
     const ucs = [];
