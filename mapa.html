@@ -208,8 +208,7 @@ let ucGroup = null;
 let tiGroup = null;
 
 async function carregarAreasRestritas() {
-  // Só carrega se há sobreposição
-  if (!sobFlag || nomesRestritosURL.length === 0) {
+  if (!sobFlag) {
     esconderLoading();
     return;
   }
@@ -219,27 +218,74 @@ async function carregarAreasRestritas() {
 
     const resp = await fetch("dados/areas_restritas.geojson");
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
     const geojson = await resp.json();
 
-    // Filtra apenas as features cujo nome está na lista de sobrepostos.
-    // Ajuste pontual: comparação robusta contra acento, maiúscula/minúscula
-    // e variações de campos de nome/tipo no GeoJSON.
-    function normalizarTexto(valor) {
-      return String(valor || "")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .trim()
-        .toUpperCase();
+    const ucs = [];
+    const tis = [];
+
+    const procBounds = procLayer ? procLayer.getBounds() : null;
+    if (!procBounds) {
+      esconderLoading();
+      return;
     }
 
-    function primeiroValor(props, campos) {
-      for (const campo of campos) {
-        if (props[campo] !== undefined && props[campo] !== null && String(props[campo]).trim() !== "") {
-          return String(props[campo]).trim();
-        }
-      }
-      return "";
+    for (const feat of geojson.features) {
+      const props = feat.properties || {};
+      const nome  = String(props.nome || props.NOME || "Área sem nome").trim();
+      const tipo  = String(props.tipo || props.TIPO || "").trim();
+
+      const latlngs = extrairCoords(feat.geometry);
+      if (!latlngs) continue;
+
+      const tempLayer = L.polygon(latlngs);
+      const areaBounds = tempLayer.getBounds();
+
+      // Verifica se a área restrita cruza a área do processo pelo envelope espacial
+      if (!procBounds.intersects(areaBounds)) continue;
+
+      const isTI =
+        tipo.includes("ndígena") ||
+        tipo.includes("Indigena") ||
+        tipo.toUpperCase().includes("TERRA IND");
+
+      const cor = isTI ? "#FF6D00" : "#00C853";
+
+      const poly = L.polygon(latlngs, {
+        pane: "overlays",
+        color: cor,
+        weight: 2,
+        fillColor: cor,
+        fillOpacity: 0.28,
+      }).bindPopup(`<b>${isTI ? "🔶 Terra Indígena" : "🌿 UC"}</b><br>${nome}`);
+
+      if (isTI) tis.push(poly);
+      else ucs.push(poly);
     }
+
+    if (ucs.length > 0) {
+      ucGroup = L.layerGroup(ucs).addTo(map);
+      document.getElementById("chk-uc-wrap").style.display = "block";
+      document.getElementById("leg-uc").style.display = "flex";
+    }
+
+    if (tis.length > 0) {
+      tiGroup = L.layerGroup(tis).addTo(map);
+      document.getElementById("chk-ti-wrap").style.display = "block";
+      document.getElementById("leg-ti").style.display = "flex";
+    }
+
+    if (procLayer) procLayer.bringToFront();
+
+    console.log("UCs adicionadas:", ucs.length);
+    console.log("TIs adicionadas:", tis.length);
+
+  } catch (err) {
+    console.warn("Não foi possível carregar áreas restritas:", err);
+  }
+
+  esconderLoading();
+}
 
     const nomeSet = new Set(nomesRestritosURL.map(normalizarTexto));
 
