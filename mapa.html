@@ -143,8 +143,8 @@ const processo  = P.get("processo") || "N/D";
 const sobFlag   = P.get("sobreposicao") === "1";
 
 let coordsProc = [], nomesRestritosURL = [];
-try { coordsProc       = JSON.parse(decodeURIComponent(P.get("coords") || "[]")); } catch(e){}
-try { nomesRestritosURL = JSON.parse(decodeURIComponent(P.get("nomes") || "[]")); } catch(e){}
+try { coordsProc       = JSON.parse(P.get("coords") || "[]"); } catch(e){ console.warn("Erro lendo coords:", e); }
+try { nomesRestritosURL = JSON.parse(P.get("nomes") || "[]"); } catch(e){ console.warn("Erro lendo nomes:", e); }
 
 // ── Cabeçalho ────────────────────────────────────────────────────────────────
 document.getElementById("hd-proc").textContent = processo;
@@ -203,21 +203,12 @@ if (coordsProc.length >= 3) {
 }
 
 // ── Carrega GeoJSON de áreas restritas do GitHub Pages ───────────────────────
-// Caminho relativo — o arquivo fica em dados/areas_restritas.geojson
+// Caminho relativo — o arquivo fica na mesma pasta do mapa.html no repo
 let ucGroup = null;
 let tiGroup = null;
 
 async function carregarAreasRestritas() {
-  let timeoutLoading = null;
-
   try {
-    // Segurança: nunca deixa a tela presa no loading
-    timeoutLoading = setTimeout(() => {
-      console.warn("Tempo limite ao carregar áreas restritas. Liberando mapa.");
-      esconderLoading();
-    }, 8000);
-
-    // Se não houver sobreposição ou processo desenhado, apenas libera o mapa
     if (!sobFlag || !procLayer) {
       return;
     }
@@ -233,20 +224,15 @@ async function carregarAreasRestritas() {
     const tis = [];
 
     const procBounds = procLayer.getBounds();
+    const nomeSet = new Set((nomesRestritosURL || []).map(n => normalizarTexto(n)));
+
+    console.log("Nomes recebidos na URL:", nomesRestritosURL);
+    console.log("Total de áreas no GeoJSON:", (geojson.features || []).length);
 
     for (const feat of geojson.features || []) {
       const props = feat.properties || {};
       const geometry = feat.geometry;
       if (!geometry) continue;
-
-      const latlngs = extrairCoords(geometry);
-      if (!latlngs) continue;
-
-      const boundsArea = boundsDeLatLngs(latlngs);
-      if (!boundsArea) continue;
-
-      // Teste espacial por envelope: adiciona somente áreas que cruzam a área consultada
-      if (!procBounds.intersects(boundsArea)) continue;
 
       const nome = String(
         props.nome ||
@@ -268,12 +254,25 @@ async function carregarAreasRestritas() {
         ""
       ).trim();
 
+      const nomeNormalizado = normalizarTexto(nome);
+
+      // 1º critério: nome enviado pelo bot
+      let deveAdicionar = nomeSet.size > 0 && nomeSet.has(nomeNormalizado);
+
+      // 2º critério de segurança: envelope espacial, caso o nome não bata
+      if (!deveAdicionar) {
+        const latlngsTeste = extrairCoords(geometry);
+        const boundsArea = latlngsTeste ? boundsDeLatLngs(latlngsTeste) : null;
+        deveAdicionar = boundsArea ? procBounds.intersects(boundsArea) : false;
+      }
+
+      if (!deveAdicionar) continue;
+
+      const latlngs = extrairCoords(geometry);
+      if (!latlngs) continue;
+
       const tipoNorm = normalizarTexto(tipo + " " + nome);
-
-      const isTI =
-        tipoNorm.includes("INDIG") ||
-        tipoNorm.includes("TERRA IND");
-
+      const isTI = tipoNorm.includes("INDIG") || tipoNorm.includes("TERRA IND");
       const cor = isTI ? "#FF6D00" : "#00C853";
 
       const poly = L.polygon(latlngs, {
@@ -312,7 +311,6 @@ async function carregarAreasRestritas() {
   } catch (err) {
     console.warn("Erro ao carregar áreas restritas:", err);
   } finally {
-    if (timeoutLoading) clearTimeout(timeoutLoading);
     esconderLoading();
   }
 }
@@ -325,7 +323,6 @@ function normalizarTexto(txt) {
     .toUpperCase();
 }
 
-// Calcula bounds sem criar camada temporária, evitando erro/travamento em MultiPolygon
 function boundsDeLatLngs(latlngs) {
   try {
     const flat = [];
@@ -341,11 +338,11 @@ function boundsDeLatLngs(latlngs) {
     }
 
     achatar(latlngs);
-
     if (!flat.length) return null;
+
     return L.latLngBounds(flat);
   } catch (e) {
-    console.warn("Erro ao calcular bounds da área restrita:", e);
+    console.warn("Erro ao calcular bounds:", e);
     return null;
   }
 }
