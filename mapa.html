@@ -221,23 +221,43 @@ async function carregarAreasRestritas() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const geojson = await resp.json();
 
-    // Filtra apenas as features cujo nome está na lista de sobrepostos
-    const nomeSet = new Set(nomesRestritosURL.map(n => n.toLowerCase().trim()));
+    // Filtra apenas as features cujo nome está na lista de sobrepostos.
+    // Ajuste pontual: comparação robusta contra acento, maiúscula/minúscula
+    // e variações de campos de nome/tipo no GeoJSON.
+    function normalizarTexto(valor) {
+      return String(valor || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim()
+        .toUpperCase();
+    }
+
+    function primeiroValor(props, campos) {
+      for (const campo of campos) {
+        if (props[campo] !== undefined && props[campo] !== null && String(props[campo]).trim() !== "") {
+          return String(props[campo]).trim();
+        }
+      }
+      return "";
+    }
+
+    const nomeSet = new Set(nomesRestritosURL.map(normalizarTexto));
 
     const ucs = [];
     const tis = [];
 
     for (const feat of geojson.features) {
       const props = feat.properties || {};
-      const nome  = String(props.nome || "").trim();
-      const tipo  = String(props.tipo || "").trim();
+      const nome  = primeiroValor(props, ["nome", "NOME", "nome_uc", "NOME_UC", "nome_ti", "NOME_TI", "name", "NAME"]);
+      const tipo  = primeiroValor(props, ["tipo", "TIPO", "categoria", "CATEGORIA"]);
 
-      if (!nomeSet.has(nome.toLowerCase())) continue;
+      if (!nomeSet.has(normalizarTexto(nome))) continue;
 
       const latlngs = extrairCoords(feat.geometry);
       if (!latlngs) continue;
 
-      const isTI = tipo.includes("ndígena") || tipo.includes("Indigena") || tipo.toUpperCase().includes("TERRA IND");
+      const tipoNorm = normalizarTexto(tipo);
+      const isTI = tipoNorm.includes("INDIGENA") || tipoNorm.includes("TERRA IND");
       const cor  = isTI ? "#FF6D00" : "#00C853";
 
       const poly = L.polygon(latlngs, {
@@ -249,6 +269,10 @@ async function carregarAreasRestritas() {
       if (isTI) tis.push(poly);
       else      ucs.push(poly);
     }
+
+    console.log("Áreas restritas recebidas na URL:", nomesRestritosURL);
+    console.log("UCs sobrepostas carregadas:", ucs.length);
+    console.log("TIs sobrepostas carregadas:", tis.length);
 
     if (ucs.length > 0) {
       ucGroup = L.layerGroup(ucs).addTo(map);
