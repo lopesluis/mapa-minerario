@@ -1,18 +1,380 @@
-def _simplificar_coords(coords: list, max_pts: int = 80) -> list:  # Reduzido de 120 para 80
-    """Simplificação adaptativa com limite máximo de pontos."""
-    if len(coords) <= max_pts:
-        return coords
-    try:
-        from shapely.geometry import Polygon as SP
-        poly = SP(coords)
-        # Aumenta a tolerância para simplificar mais
-        for tol in (0.001, 0.002, 0.005, 0.01, 0.02, 0.05):
-            simp = poly.simplify(tol, preserve_topology=True)
-            geom = simp if simp.geom_type == "Polygon" else max(simp.geoms, key=lambda g: g.area)
-            c = list(geom.exterior.coords)
-            if len(c) <= max_pts:
-                return c
-    except Exception:
-        pass
-    step = max(1, len(coords) // max_pts)
-    return coords[::step][:max_pts]
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mapa ANM</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<style>
+  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+  html, body {
+    height: 100%;
+    font-family: "Segoe UI", sans-serif;
+    background: #0f0f1a;
+    color: #fff;
+    overflow: hidden;
+  }
+  body { display: flex; flex-direction: column; }
+
+  #header {
+    flex-shrink: 0;
+    background: #1a1a2e;
+    padding: 8px 14px;
+    border-bottom: 2px solid #2a2a4a;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  #header h1 { font-size: 14px; white-space: nowrap; }
+  #header h1 span { color: #FF4500; }
+  .badge {
+    padding: 3px 11px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; border: 1px solid currentColor;
+  }
+
+  #map-wrap {
+    flex: 1 1 0;
+    min-height: 0;
+    position: relative;
+  }
+
+  #map {
+    width: 100%;
+    height: 100%;
+  }
+
+  .panel {
+    position: absolute;
+    z-index: 1000;
+    background: rgba(10,10,25,0.93);
+    border: 1px solid #3a3a5a;
+    border-radius: 8px;
+    padding: 10px 13px;
+    font-size: 12px;
+    pointer-events: all;
+  }
+  .panel h3 {
+    color: #999; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 1px; margin-bottom: 7px;
+  }
+  .panel hr { border: none; border-top: 1px solid #333; margin: 7px 0; }
+
+  #ctrl { top: 10px; right: 10px; min-width: 155px; }
+  #legend { bottom: 30px; left: 10px; }
+
+  .ci { display:flex; align-items:center; gap:7px; margin-bottom:5px; cursor:pointer; color:#ddd; }
+  .ci input { cursor:pointer; accent-color:#FF4500; }
+  .dot { width:11px; height:11px; border-radius:2px; flex-shrink:0; border:1px solid #fff3; }
+
+  .li { display:flex; align-items:center; gap:7px; margin-bottom:4px; color:#ddd; }
+  .lb { width:14px; height:10px; border-radius:2px; border:1px solid #fff4; }
+
+  #loading {
+    position: absolute; inset: 0; z-index: 2000;
+    background: rgba(10,10,25,0.85);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    font-size: 14px; color: #ccc;
+  }
+  .spinner {
+    width: 36px; height: 36px;
+    border: 3px solid #333;
+    border-top-color: #FF4500;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>⛏️ ANM — <span id="hd-proc">…</span></h1>
+  <div class="badge" id="hd-badge"> </div>
+</div>
+
+<div id="map-wrap">
+  <div id="map"></div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <span id="loading-msg">Processando sobreposição…</span>
+  </div>
+
+  <div class="panel" id="ctrl" style="display:none">
+    <h3>Camada base</h3>
+    <label class="ci"><input type="radio" name="base" value="esri" checked> ESRI Satélite</label>
+    <label class="ci"><input type="radio" name="base" value="osm"> OpenStreetMap</label>
+    <hr>
+    <h3>Overlays</h3>
+    <label class="ci"><input type="checkbox" id="chk-proc" checked>
+      <span class="dot" style="background:#FF4500"></span> Processo</label>
+    <div id="chk-uc-wrap" style="display:none">
+      <label class="ci"><input type="checkbox" id="chk-uc" checked>
+        <span class="dot" style="background:#00C853"></span> UCs</label>
+    </div>
+    <div id="chk-ti-wrap" style="display:none">
+      <label class="ci"><input type="checkbox" id="chk-ti" checked>
+        <span class="dot" style="background:#FF6D00"></span> TIs</label>
+    </div>
+  </div>
+
+  <div class="panel" id="legend" style="display:none">
+    <h3>Legenda</h3>
+    <div class="li"><div class="lb" style="background:#FF450055;border-color:#FF4500"></div> Processo minerário</div>
+    <div class="li" id="leg-uc" style="display:none"><div class="lb" style="background:#00C85355;border-color:#00C853"></div> Unidade de Conservação</div>
+    <div class="li" id="leg-ti" style="display:none"><div class="lb" style="background:#FF6D0055;border-color:#FF6D00"></div> Terra Indígena</div>
+  </div>
+</div>
+
+<script>
+// ── DADOS DAS ÁREAS RESTRITAS EMBUTIDOS (GeoJSON) ───────────────────────────
+// IMPORTANTE: Copie o conteúdo COMPLETO do seu arquivo areas_restritas.geojson aqui
+// Este é um exemplo com estrutura. Você precisa colocar o GeoJSON real.
+const AREAS_RESTRITAS_GEOJSON = {
+  "type": "FeatureCollection",
+  "name": "areas_restritas",
+  "features": [
+    // COLOQUE AQUI O CONTEÚDO COMPLETO DO SEU areas_restritas.geojson
+    // Exemplo de estrutura:
+    // { "type": "Feature", "properties": { "nome": "Exemplo", "tipo": "Unidade de Conservação" }, "geometry": { "type": "Polygon", "coordinates": [...] } }
+  ]
+};
+
+// ── Se preferir, pode manter o arquivo externo ──────────────────────────────
+// Descomente a linha abaixo e comente a constante acima para usar arquivo externo
+// const AREAS_RESTRITAS_GEOJSON = null;
+
+// ── Parâmetros da URL ────────────────────────────────────────────────────────
+const P = new URLSearchParams(location.search);
+
+const processo  = P.get("processo") || "N/D";
+const sobFlag   = P.get("sobreposicao") === "1";
+
+let coordsProc = [], nomesRestritosURL = [];
+try { coordsProc       = JSON.parse(P.get("coords") || "[]"); } catch(e){ console.warn("Erro lendo coords:", e); }
+try { nomesRestritosURL = JSON.parse(P.get("nomes") || "[]"); } catch(e){ console.warn("Erro lendo nomes:", e); }
+
+// ── Cabeçalho ────────────────────────────────────────────────────────────────
+document.getElementById("hd-proc").textContent = processo;
+const badge = document.getElementById("hd-badge");
+if (sobFlag) {
+  badge.textContent = "⚠️ Sobreposição detectada";
+  badge.style.color = "#FF6D00";
+} else {
+  badge.textContent = "✅ Sem sobreposição";
+  badge.style.color = "#00C853";
+}
+
+// ── Inicializa Leaflet ───────────────────────────────────────────────────────
+const map = L.map("map", { zoomControl: true });
+
+const esriLayer = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  { attribution: "© Esri", maxZoom: 19, crossOrigin: true }
+).addTo(map);
+
+const osmLayer = L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { attribution: "© OpenStreetMap", maxZoom: 19 }
+);
+
+let esriFailed = false;
+esriLayer.on("tileerror", () => {
+  if (!esriFailed) {
+    esriFailed = true;
+    map.removeLayer(esriLayer);
+    osmLayer.addTo(map);
+    document.querySelector('input[value="esri"]').checked = false;
+    document.querySelector('input[value="osm"]').checked  = true;
+  }
+});
+
+map.createPane("overlays");
+map.getPane("overlays").style.zIndex = 650;
+
+// ── Polígono do processo ─────────────────────────────────────────────────────
+let procLayer = null;
+if (coordsProc.length >= 3) {
+  procLayer = L.polygon(coordsProc.map(c => [c[1], c[0]]), {
+    pane: "overlays",
+    color: "#FF4500", weight: 2.5,
+    fillColor: "#FF4500", fillOpacity: 0.30,
+  }).addTo(map);
+  procLayer.bindPopup(`<b>⛏️ Processo ${processo}</b>`);
+  map.fitBounds(procLayer.getBounds(), { padding: [30, 30] });
+} else {
+  map.setView([-14, -52], 4);
+}
+
+// ── Variáveis globais ────────────────────────────────────────────────────────
+let ucGroup = null;
+let tiGroup = null;
+
+function normalizarTexto(txt) {
+  return String(txt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
+}
+
+function carregarAreasRestritas() {
+  try {
+    if (!sobFlag || !procLayer || coordsProc.length < 3) {
+      esconderLoading();
+      return;
+    }
+
+    document.getElementById("loading-msg").textContent = "Verificando áreas sobrepostas…";
+    
+    // Verifica se tem dados embutidos
+    if (!AREAS_RESTRITAS_GEOJSON || !AREAS_RESTRITAS_GEOJSON.features || AREAS_RESTRITAS_GEOJSON.features.length === 0) {
+      console.warn("Nenhuma área restrita carregada. Verifique o GeoJSON embutido.");
+      esconderLoading();
+      return;
+    }
+
+    // Polígono do processo em GeoJSON para interseção real com Turf
+    const coordsFechadas = JSON.parse(JSON.stringify(coordsProc));
+    const primeiro = coordsFechadas[0];
+    const ultimo = coordsFechadas[coordsFechadas.length - 1];
+
+    if (primeiro[0] !== ultimo[0] || primeiro[1] !== ultimo[1]) {
+      coordsFechadas.push(primeiro);
+    }
+
+    const processoTurf = turf.polygon([coordsFechadas]);
+    
+    const ucs = [];
+    const tis = [];
+
+    for (const feat of AREAS_RESTRITAS_GEOJSON.features) {
+      try {
+        if (!feat.geometry) continue;
+        
+        let cruza = false;
+        
+        // Verifica interseção baseado no tipo de geometria
+        if (feat.geometry.type === "Polygon") {
+          const polyTurf = turf.polygon(feat.geometry.coordinates);
+          cruza = turf.booleanIntersects(processoTurf, polyTurf);
+        } else if (feat.geometry.type === "MultiPolygon") {
+          for (const coords of feat.geometry.coordinates) {
+            const polyTurf = turf.polygon(coords);
+            if (turf.booleanIntersects(processoTurf, polyTurf)) {
+              cruza = true;
+              break;
+            }
+          }
+        }
+        
+        if (!cruza) continue;
+
+        const props = feat.properties || {};
+        const nome = String(
+          props.nome ||
+          props.NOME ||
+          props.nome_uc ||
+          props.NOME_UC ||
+          props.nome_ti ||
+          props.NOME_TI ||
+          props.name ||
+          props.NAME ||
+          "Área sem nome"
+        ).trim();
+
+        const tipo = String(
+          props.tipo ||
+          props.TIPO ||
+          props.categoria ||
+          props.CATEGORIA ||
+          ""
+        ).trim();
+
+        const tipoNorm = normalizarTexto(tipo + " " + nome);
+        const isTI = tipoNorm.includes("INDIG") || tipoNorm.includes("TERRA IND");
+        const cor = isTI ? "#FF6D00" : "#00C853";
+
+        const layer = L.geoJSON(feat, {
+          pane: "overlays",
+          style: {
+            color: cor,
+            weight: 3,
+            fillColor: cor,
+            fillOpacity: 0.35
+          }
+        }).bindPopup(`<b>${isTI ? "🔶 Terra Indígena" : "🌿 Área Restrita"}</b><br>${nome}`);
+
+        if (isTI) {
+          tis.push(layer);
+        } else {
+          ucs.push(layer);
+        }
+        
+      } catch (e) {
+        console.warn("Erro ao processar área:", e);
+      }
+    }
+
+    if (ucs.length > 0) {
+      ucGroup = L.layerGroup(ucs).addTo(map);
+      document.getElementById("chk-uc-wrap").style.display = "block";
+      document.getElementById("leg-uc").style.display = "flex";
+    }
+
+    if (tis.length > 0) {
+      tiGroup = L.layerGroup(tis).addTo(map);
+      document.getElementById("chk-ti-wrap").style.display = "block";
+      document.getElementById("leg-ti").style.display = "flex";
+    }
+
+    if (procLayer) procLayer.bringToFront();
+
+  } catch (err) {
+    console.error("Erro ao processar áreas restritas:", err);
+  } finally {
+    esconderLoading();
+  }
+}
+
+function esconderLoading() {
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("ctrl").style.display    = "block";
+  document.getElementById("legend").style.display  = "block";
+  setTimeout(() => map.invalidateSize(), 100);
+}
+
+// Inicia o carregamento
+carregarAreasRestritas();
+
+// ── Controles de camada ──────────────────────────────────────────────────────
+document.querySelectorAll('input[name="base"]').forEach(r => {
+  r.addEventListener("change", () => {
+    if (r.value === "esri") { map.removeLayer(osmLayer);  map.addLayer(esriLayer); }
+    else                    { map.removeLayer(esriLayer); map.addLayer(osmLayer);  }
+  });
+});
+
+document.getElementById("chk-proc").addEventListener("change", e => {
+  if (!procLayer) return;
+  e.target.checked ? map.addLayer(procLayer) : map.removeLayer(procLayer);
+});
+
+const chkUc = document.getElementById("chk-uc");
+if (chkUc) {
+  chkUc.addEventListener("change", e => {
+    if (!ucGroup) return;
+    e.target.checked ? map.addLayer(ucGroup) : map.removeLayer(ucGroup);
+  });
+}
+
+const chkTi = document.getElementById("chk-ti");
+if (chkTi) {
+  chkTi.addEventListener("change", e => {
+    if (!tiGroup) return;
+    e.target.checked ? map.addLayer(tiGroup) : map.removeLayer(tiGroup);
+  });
+}
+
+window.addEventListener("load", () => setTimeout(() => map.invalidateSize(), 100));
+</script>
+</body>
+</html>
